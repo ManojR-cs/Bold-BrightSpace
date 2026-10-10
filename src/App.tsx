@@ -826,7 +826,7 @@ export default function App() {
             {[0, 1, 2].map((rowIndex) => {
               const rowAssets = displayedProjectAssets.filter((_, index) => index % 3 === rowIndex)
               return (
-                  <div key={rowIndex} role="group" className="gallery-row section-reveal overflow-hidden" aria-label={`Gallery row ${rowIndex + 1}`}>
+                  <div key={rowIndex} role="group" className="gallery-row section-reveal" aria-label={`Gallery row ${rowIndex + 1}`}>
                   <div className={`gallery-track ${rowIndex === 1 ? 'gallery-track--reverse' : ''}`}>
                     {[0, 1].map((copy) => (
                       <div key={copy} className="gallery-set" aria-hidden={copy === 1}>

@@ -1,10 +1,22 @@
 # STATUS.md — Bold & Bright Space Website
 
-## Current milestone: Ordered navbar navigation and spacing
+## Current milestone: Mobile gallery, reviews, and Instagram layout
 
 Last updated: 2026-10-10
 
 ### Latest milestone work
+
+- Made each project gallery row's overflow behavior explicit: desktop rows clip their animated track, while touch-oriented and narrow viewports use native horizontal scrolling with momentum and pan gestures. Removed the conflicting `overflow-hidden` utility from the row and disabled the duplicate loop set while it is in the static mobile gallery mode.
+- Restored slow, continuous vertical movement for the two Google review rails on narrow screens. The rails pause while a review is pressed, hovered, or keyboard-focused. The reduced-motion fallback remains a complete static list with natural page scrolling and the visual loop copy hidden from assistive technology.
+- Changed the Instagram feature to a two-column mobile grid, placing the profile button under the handle and allowing the handle to wrap at narrow widths. Desktop flex layout is unchanged.
+
+### Latest milestone verification
+
+- Browser inspection could not be completed. In-app browser attempts to open `localhost:5174`, `127.0.0.1:5174`, and the Vite network address timed out. The Vite process printed its ready message but no local listener was available afterward; local `curl` requests to ports 5173 and 5174 failed with connection refused. No mobile or desktop visual result is claimed.
+- Source inspection confirms the 390 px breakpoint now provides an explicitly scrollable gallery row, animated review rails with visible original and loop groups, and a stacked Instagram CTA. The reduced-motion stylesheet switches reviews to a full static list and the gallery to native scrolling.
+- `npm run lint`: passed. `npm run build`: passed. `git diff --check`: passed with only Git's working-copy line-ending notices.
+
+### Previous milestone: Ordered navbar navigation and spacing
 
 - Reordered and completed the header navigation to follow the page from top to bottom: Home, Services, Projects, About, Why Choose Us, Reviews, Instagram, Service Areas, and Contact. Instagram remains an in-section destination within Reviews; no new section or content was added.
 - The existing scroll-aware active state now marks Home while the Hero is at the reading marker. Existing mapping for the Footer to Contact is retained. The mobile drawer uses the same full ordered links and closes after a selection.
