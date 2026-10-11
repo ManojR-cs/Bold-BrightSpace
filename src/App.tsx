@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type FormEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, type FormEvent } from 'react'
 import {
   Menu,
   X,
@@ -209,11 +209,36 @@ export default function App() {
   const [enquiryModalOpen, setEnquiryModalOpen] = useState(false)
   const [isScrolled, setIsScrolled] = useState(false)
   const [activeProjectIndex, setActiveProjectIndex] = useState<number | null>(null)
+  const [isProjectLightboxClosing, setIsProjectLightboxClosing] = useState(false)
   const [photoFlipDirection, setPhotoFlipDirection] = useState<'next' | 'previous'>('next')
   const [selectedProjectTheme, setSelectedProjectTheme] = useState<'All' | ProjectPhotoTheme>('All')
   const [galleryOpener, setGalleryOpener] = useState<HTMLButtonElement | null>(null)
   const lightboxCloseRef = useRef<HTMLButtonElement>(null)
   const lightboxWasOpenRef = useRef(false)
+  const lightboxClosingRef = useRef(false)
+  const lightboxCloseTimerRef = useRef<number | null>(null)
+
+  const closeProjectLightbox = useCallback(() => {
+    if (lightboxClosingRef.current) return
+
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setActiveProjectIndex(null)
+      return
+    }
+
+    lightboxClosingRef.current = true
+    setIsProjectLightboxClosing(true)
+    lightboxCloseTimerRef.current = window.setTimeout(() => {
+      lightboxCloseTimerRef.current = null
+      lightboxClosingRef.current = false
+      setIsProjectLightboxClosing(false)
+      setActiveProjectIndex(null)
+    }, 220)
+  }, [])
+
+  useEffect(() => () => {
+    if (lightboxCloseTimerRef.current !== null) window.clearTimeout(lightboxCloseTimerRef.current)
+  }, [])
 
   // Auto-dismiss branded intro
   useEffect(() => {
@@ -234,40 +259,38 @@ export default function App() {
     }
   }, [introVisible])
 
-  // Reveal below-the-fold content only after an observer is ready. Without
-  // JavaScript, IntersectionObserver, or when setup fails, content stays visible.
+  // Reveal targets are visible by default; the observer only adds motion.
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !('IntersectionObserver' in window)) return
 
-    const elements = Array.from(document.querySelectorAll<HTMLElement>('.section-reveal'))
+    const selector = '.section-reveal, .text-reveal-group, .image-reveal'
+    const elements = Array.from(document.querySelectorAll<HTMLElement>(selector))
+      .filter((element) => !element.parentElement?.closest(selector))
     let observer: IntersectionObserver | undefined
     try {
       observer = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
           if (!entry.isIntersecting) return
           const element = entry.target as HTMLElement
-          element.classList.remove('reveal-pending')
-          element.classList.add('reveal-entering')
+          if (element.classList.contains('image-reveal')) {
+            element.classList.add('image-reveal-entering')
+          } else {
+            element.classList.add('reveal-entering')
+          }
           observer?.unobserve(element)
         })
       }, { threshold: 0.08, rootMargin: '0px 0px -5% 0px' })
 
-      const readyObserver = observer
-      elements.forEach((element) => {
-        if (element.getBoundingClientRect().top > window.innerHeight) {
-          element.classList.add('reveal-pending')
-          readyObserver.observe(element)
-        }
-      })
+      elements.forEach((element) => observer?.observe(element))
     } catch {
-      elements.forEach((element) => element.classList.remove('reveal-pending', 'reveal-entering'))
+      elements.forEach((element) => element.classList.remove('reveal-entering', 'image-reveal-entering'))
       observer?.disconnect()
       return
     }
 
     return () => {
       observer.disconnect()
-      elements.forEach((element) => element.classList.remove('reveal-pending', 'reveal-entering'))
+      elements.forEach((element) => element.classList.remove('reveal-entering', 'image-reveal-entering'))
     }
   }, [])
 
@@ -306,7 +329,11 @@ export default function App() {
       ? projectAssets
       : projectAssets.filter((asset) => asset.theme === selectedProjectTheme)
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActiveProjectIndex(null)
+      if (event.key === 'Escape') {
+        closeProjectLightbox()
+        return
+      }
+      if (isProjectLightboxClosing) return
       if (event.key === 'ArrowLeft') {
         setPhotoFlipDirection('previous')
         setActiveProjectIndex((index) => index === null ? null : (index - 1 + lightboxAssets.length) % lightboxAssets.length)
@@ -328,7 +355,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [activeProjectIndex, selectedProjectTheme])
+  }, [activeProjectIndex, selectedProjectTheme, isProjectLightboxClosing, closeProjectLightbox])
 
   useEffect(() => {
     if (activeProjectIndex !== null && !lightboxWasOpenRef.current) {
@@ -353,6 +380,180 @@ export default function App() {
     ? projectAssets
     : projectAssets.filter((asset) => asset.theme === selectedProjectTheme)
   const activeProjectAssets = displayedProjectAssets
+
+  // Use native horizontal scrolling for mobile auto-drift so touch gestures
+  // remain in control of the same scroll position.
+  useEffect(() => {
+    const mobileLayout = window.matchMedia('(hover: none), (max-width: 767px)')
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+    if (!mobileLayout.matches) return
+    let motionAllowed = !reducedMotion.matches
+
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('.gallery-row'))
+    const timers = new Map<HTMLElement, number>()
+    const lastFrames = new Map<HTMLElement, number>()
+    const setWidths = new Map<HTMLElement, number>()
+    const positions = new Map<HTMLElement, number>()
+    const activeRows = new Set<HTMLElement>()
+    let frame = 0
+
+    const measureRows = (initial = false) => {
+      rows.forEach((row, index) => {
+        const firstSet = row.querySelector<HTMLElement>('.gallery-set')
+        const width = firstSet?.getBoundingClientRect().width ?? 0
+        if (!width) return
+        const previousWidth = setWidths.get(row)
+        const currentPosition = positions.get(row) ?? row.scrollLeft
+        const progress = previousWidth
+          ? Math.min(1, Math.max(0, (index === 1 ? currentPosition : currentPosition % previousWidth) / previousWidth))
+          : 0
+        setWidths.set(row, width)
+        if (initial) {
+          positions.set(row, index === 1 ? width : 0)
+          row.scrollLeft = positions.get(row) ?? 0
+        } else if (previousWidth) {
+          const position = progress * width
+          positions.set(row, position)
+          row.scrollLeft = position
+        }
+      })
+    }
+    const handleResize = () => measureRows()
+
+    const clearIdleTimer = (row: HTMLElement) => {
+      const timer = timers.get(row)
+      if (timer !== undefined) window.clearTimeout(timer)
+      timers.delete(row)
+    }
+
+    const resumeAfterIdle = (row: HTMLElement) => {
+      clearIdleTimer(row)
+      timers.set(row, window.setTimeout(() => {
+        timers.delete(row)
+        // Let native touch momentum finish, then resume from its actual offset.
+        positions.set(row, row.scrollLeft)
+        lastFrames.delete(row)
+        requestFrame()
+      }, 1600))
+    }
+
+    const handleActiveInteraction = (event: Event) => {
+      const row = event.currentTarget as HTMLElement
+      clearIdleTimer(row)
+      activeRows.add(row)
+      positions.set(row, row.scrollLeft)
+      lastFrames.delete(row)
+    }
+
+    const handleInteraction = (event: Event) => {
+      const row = event.currentTarget as HTMLElement
+      activeRows.delete(row)
+      lastFrames.delete(row)
+      resumeAfterIdle(row)
+    }
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const row = event.currentTarget as HTMLElement
+      clearIdleTimer(row)
+      activeRows.add(row)
+      lastFrames.delete(row)
+    }
+
+    const handleFocusOut = (event: FocusEvent) => {
+      const row = event.currentTarget as HTMLElement
+      if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return
+      activeRows.delete(row)
+      resumeAfterIdle(row)
+    }
+
+    const animate = (time: number) => {
+      frame = 0
+      if (!motionAllowed || document.visibilityState !== 'visible') return
+      let shouldContinue = false
+      rows.forEach((row, index) => {
+        const width = setWidths.get(row) ?? 0
+        if (!width || activeRows.has(row) || timers.has(row) || row.matches(':focus-within')) return
+        shouldContinue = true
+
+        const previousTime = lastFrames.get(row) ?? time
+        const elapsed = Math.min(time - previousTime, 48)
+        lastFrames.set(row, time)
+        const distance = elapsed * width / 125000
+
+        const direction = index === 1 ? -1 : 1
+        let position = (positions.get(row) ?? row.scrollLeft) + direction * distance
+        if (direction < 0 && position <= 0) position += width
+        else if (direction > 0 && position >= width) position -= width
+        positions.set(row, position)
+        row.scrollLeft = position
+      })
+      if (shouldContinue) requestFrame()
+    }
+
+    function requestFrame() {
+      if (motionAllowed && document.visibilityState === 'visible' && !frame) {
+        frame = window.requestAnimationFrame(animate)
+      }
+    }
+
+    const handleMotionPreference = () => {
+      motionAllowed = !reducedMotion.matches
+      if (motionAllowed) requestFrame()
+      else {
+        window.cancelAnimationFrame(frame)
+        frame = 0
+        lastFrames.clear()
+      }
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') requestFrame()
+      else {
+        window.cancelAnimationFrame(frame)
+        frame = 0
+        lastFrames.clear()
+      }
+    }
+
+    measureRows(true)
+    rows.forEach((row) => {
+      row.addEventListener('pointerdown', handleActiveInteraction, { passive: true })
+      row.addEventListener('pointerup', handleInteraction, { passive: true })
+      row.addEventListener('pointercancel', handleInteraction, { passive: true })
+      row.addEventListener('touchstart', handleActiveInteraction, { passive: true })
+      row.addEventListener('touchend', handleInteraction, { passive: true })
+      row.addEventListener('touchcancel', handleInteraction, { passive: true })
+      row.addEventListener('wheel', handleInteraction, { passive: true })
+      row.addEventListener('keydown', handleInteraction)
+      row.addEventListener('focusin', handleFocusIn)
+      row.addEventListener('focusout', handleFocusOut)
+    })
+
+    window.addEventListener('resize', handleResize)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    reducedMotion.addEventListener('change', handleMotionPreference)
+    requestFrame()
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener('resize', handleResize)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      reducedMotion.removeEventListener('change', handleMotionPreference)
+      rows.forEach((row) => {
+        clearIdleTimer(row)
+        row.removeEventListener('pointerdown', handleActiveInteraction)
+        row.removeEventListener('pointerup', handleInteraction)
+        row.removeEventListener('pointercancel', handleInteraction)
+        row.removeEventListener('touchstart', handleActiveInteraction)
+        row.removeEventListener('touchend', handleInteraction)
+        row.removeEventListener('touchcancel', handleInteraction)
+        row.removeEventListener('wheel', handleInteraction)
+        row.removeEventListener('keydown', handleInteraction)
+        row.removeEventListener('focusin', handleFocusIn)
+        row.removeEventListener('focusout', handleFocusOut)
+      })
+    }
+  }, [selectedProjectTheme])
 
   useEffect(() => {
     const sections = Array.from(document.querySelectorAll<HTMLElement>('main section[id], footer[id]'))
@@ -557,7 +758,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setEnquiryModalOpen(true)}
-              className="inline-flex items-center gap-2.5 px-6 py-2.5 rounded-full text-xs font-semibold uppercase tracking-wider bg-gradient-to-r from-[#F5A623] to-[#D48911] text-black hover:from-[#FFCA6B] hover:to-[#F5A623] transition-all duration-300 shadow-md hover:shadow-[#F5A623]/25 hover:shadow-lg active:scale-95 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623] focus-visible:ring-offset-2 focus-visible:ring-offset-[#080A0E]"
+              className="inline-flex items-center gap-2.5 px-6 py-2.5 rounded-full text-xs font-semibold uppercase tracking-wider bg-gradient-to-r from-[#F5A623] to-[#D48911] text-black hover:from-[#FFCA6B] hover:to-[#F5A623] transition-all duration-300 shadow-md hover:shadow-[#F5A623]/25 hover:shadow-lg active:scale-[0.98] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623] focus-visible:ring-offset-2 focus-visible:ring-offset-[#080A0E]"
             >
               <span>Enquire on WhatsApp</span>
               <ArrowRight className="w-3.5 h-3.5 transition-transform duration-300 group-hover:translate-x-0.5" />
@@ -652,7 +853,7 @@ export default function App() {
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 pt-1 animate-fade-up">
                   <a
                     href="#portfolio"
-                    className="inline-flex items-center justify-center gap-2.5 px-8 py-3.5 rounded-full text-xs font-semibold uppercase tracking-wider bg-gradient-to-r from-[#F5A623] to-[#D48911] text-black hover:from-[#FFCA6B] hover:to-[#F5A623] transition-all duration-300 shadow-lg shadow-[#F5A623]/20 hover:shadow-[#F5A623]/35 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]"
+                    className="inline-flex items-center justify-center gap-2.5 px-8 py-3.5 rounded-full text-xs font-semibold uppercase tracking-wider bg-gradient-to-r from-[#F5A623] to-[#D48911] text-black hover:from-[#FFCA6B] hover:to-[#F5A623] transition-all duration-300 shadow-lg shadow-[#F5A623]/20 hover:shadow-[#F5A623]/35 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]"
                   >
                     <span>Explore Our Work</span>
                     <ArrowRight className="w-4 h-4" />
@@ -738,28 +939,29 @@ export default function App() {
         >
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(245,166,35,0.06),transparent_38%)]" />
           <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="section-reveal mb-10 flex flex-col gap-4 sm:mb-12 sm:flex-row sm:items-end sm:justify-between">
+            <div className="text-reveal-group mb-10 flex flex-col gap-4 sm:mb-12 sm:flex-row sm:items-end sm:justify-between">
               <div className="max-w-2xl">
-                <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">
+                <p className="text-reveal-item text-reveal-item--eyebrow mb-3 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">
                   Services
                 </p>
                 <h2
                   id="services-heading"
-                  className="font-serif text-3xl font-semibold leading-tight text-white sm:text-4xl lg:text-5xl"
+                  className="text-reveal-item text-reveal-item--heading font-serif text-3xl font-semibold leading-tight text-white sm:text-4xl lg:text-5xl"
                 >
                   Interior Solutions, From Concept to Completion
                 </h2>
               </div>
-              <p className="max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-right">
+              <p className="text-reveal-item text-reveal-item--body max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-right">
                 Explore our interior design, finishing, and fabrication services for residential and commercial spaces.
               </p>
             </div>
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:gap-6">
-              {serviceGroups.map((group) => (
+              {serviceGroups.map((group, index) => (
                 <article
                   key={group.number}
-                  className="section-reveal gold-sweep group overflow-hidden rounded-2xl border border-[#242732] bg-[#101219] transition duration-300 hover:-translate-y-1 hover:border-[#F5A623]/45 hover:shadow-xl hover:shadow-black/25 motion-reduce:transform-none motion-reduce:transition-none"
+                  style={{ animationDelay: `${index * 70}ms` }}
+                  className="section-reveal service-card-reveal gold-sweep group overflow-hidden rounded-2xl border border-[#242732] bg-[#101219] transition duration-300 hover:-translate-y-1 hover:border-[#F5A623]/45 hover:shadow-xl hover:shadow-black/25 motion-reduce:transform-none motion-reduce:transition-none"
                 >
                   <div className="relative aspect-[16/8.5] overflow-hidden bg-[#080A0E]">
                     <img
@@ -796,12 +998,12 @@ export default function App() {
         {/* Client project gallery — original media is kept exclusive to this section. */}
         <section id="portfolio" aria-labelledby="portfolio-heading" className="overflow-hidden border-t border-[#242732]/80 bg-[#080A0E] py-12 sm:py-16 lg:py-20">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="section-reveal mb-7 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
+            <div className="text-reveal-group mb-7 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
               <div className="max-w-2xl">
-                <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Selected work</p>
-                <h2 id="portfolio-heading" className="font-serif text-3xl font-semibold leading-tight text-white sm:text-4xl lg:text-5xl">A Closer Look at Our Work</h2>
+                <p className="text-reveal-item text-reveal-item--eyebrow mb-3 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Selected work</p>
+                <h2 id="portfolio-heading" className="text-reveal-item text-reveal-item--heading font-serif text-3xl font-semibold leading-tight text-white sm:text-4xl lg:text-5xl">A Closer Look at Our Work</h2>
               </div>
-              <p className="max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-right">Explore selected project photographs showcasing interior details, finishes, and completed spaces.</p>
+              <p className="text-reveal-item text-reveal-item--body max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-right">Explore selected project photographs showcasing interior details, finishes, and completed spaces.</p>
             </div>
             <div className="section-reveal mb-6 flex flex-wrap items-center gap-2" role="group" aria-label="Filter project photographs by visible theme">
               <span className="mr-1 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#9D9286]">View</span>
@@ -826,7 +1028,7 @@ export default function App() {
             {[0, 1, 2].map((rowIndex) => {
               const rowAssets = displayedProjectAssets.filter((_, index) => index % 3 === rowIndex)
               return (
-                  <div key={rowIndex} role="group" className="gallery-row section-reveal" aria-label={`Gallery row ${rowIndex + 1}`}>
+                  <div key={rowIndex} role="group" className="gallery-row" aria-label={`Gallery row ${rowIndex + 1}`}>
                   <div className={`gallery-track ${rowIndex === 1 ? 'gallery-track--reverse' : ''}`}>
                     {[0, 1].map((copy) => (
                       <div key={copy} className="gallery-set" aria-hidden={copy === 1}>
@@ -859,25 +1061,24 @@ export default function App() {
         <section id="about" aria-labelledby="about-heading" className="border-t border-[#242732]/80 bg-[#0B0D12] py-16 sm:py-20 lg:py-24">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="about-editorial">
-              <div className="about-editorial__heading section-reveal">
-                <p className="mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">About Bold &amp; Bright Space</p>
-                <h2 id="about-heading" className="max-w-xl font-serif text-4xl font-medium leading-[0.98] text-white sm:text-5xl lg:text-7xl">Spaces <span className="italic text-[#FFCA6B]">designed</span><br />around you.</h2>
+              <div className="about-editorial__heading text-reveal-group">
+                <p className="text-reveal-item text-reveal-item--eyebrow mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">About Bold &amp; Bright Space</p>
+                <h2 id="about-heading" className="text-reveal-item text-reveal-item--heading max-w-xl font-serif text-4xl font-medium leading-[0.98] text-white sm:text-5xl lg:text-7xl">Spaces <span className="italic text-[#FFCA6B]">designed</span><br />around you.</h2>
                 <span aria-hidden="true" className="about-editorial__rule mt-7 block h-px w-20 bg-[#F5A623]" />
               </div>
               <div className="about-editorial__visual section-reveal">
                 <div className="about-editorial__image about-editorial__image--main">
                   <img src={builtinsServicesPhotoUrl} alt="Interior reference with considered furniture, textures, and warm finishes" loading="lazy" decoding="async" />
-                  <span className="about-editorial__image-label">Interior reference</span>
                 </div>
                 <div className="about-editorial__image about-editorial__image--detail">
                   <img src={ceilingServicesPhotoUrl} alt="Interior reference showing layered ceiling and lighting details" loading="lazy" decoding="async" />
                 </div>
                 <span aria-hidden="true" className="about-editorial__index">B<span>&</span>B</span>
               </div>
-              <div className="about-editorial__copy section-reveal">
-                <p className="about-editorial__lead">Every space has its own purpose, character, and possibilities.</p>
-                <p>Bold &amp; Bright Space works across interior design and interior execution, helping bring ideas to life through considered layouts, practical solutions, and attention to detail.</p>
-                <p>From individual interior elements to complete interior projects, our focus is on creating spaces that feel cohesive, work well for everyday use, and reflect the client&apos;s requirements.</p>
+              <div className="about-editorial__copy text-reveal-group">
+                <p className="text-reveal-item text-reveal-item--heading about-editorial__lead">Every space has its own purpose, character, and possibilities.</p>
+                <p className="text-reveal-item text-reveal-item--body">Bold &amp; Bright Space works across interior design and interior execution, helping bring ideas to life through considered layouts, practical solutions, and attention to detail.</p>
+                <p className="text-reveal-item text-reveal-item--supporting">From individual interior elements to complete interior projects, our focus is on creating spaces that feel cohesive, work well for everyday use, and reflect the client&apos;s requirements.</p>
               </div>
             </div>
           </div>
@@ -886,13 +1087,14 @@ export default function App() {
         <section id="why" aria-labelledby="why-heading" className="border-t border-[#242732]/80 bg-[#080A0E] py-16 sm:py-20 lg:py-24">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="why-editorial">
-              <div className="why-editorial__intro section-reveal">
-                <p className="mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">The way we work</p>
-                <h2 id="why-heading" className="font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Considered at<br /><span className="italic text-[#FFCA6B]">every step.</span></h2>
-                <p className="mt-5 max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-base">A thoughtful interior brings together how a space looks, how it works, and how its details come together.</p>
-                <div className="why-editorial__image mt-8 overflow-hidden rounded-sm border border-[#242732]">
+              <div className="why-editorial__intro">
+                <div className="text-reveal-group">
+                  <p className="text-reveal-item text-reveal-item--eyebrow mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">The way we work</p>
+                  <h2 id="why-heading" className="text-reveal-item text-reveal-item--heading font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Considered at<br /><span className="italic text-[#FFCA6B]">every step.</span></h2>
+                  <p className="text-reveal-item text-reveal-item--body mt-5 max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-base">A thoughtful interior brings together how a space looks, how it works, and how its details come together.</p>
+                </div>
+                <div className="image-reveal why-editorial__image mt-8 overflow-hidden rounded-sm border border-[#242732]">
                   <img src={fabricationServicesPhotoUrl} alt="Interior reference with coordinated finishes and functional living space" loading="lazy" decoding="async" />
-                  <span className="about-editorial__image-label">Interior reference</span>
                 </div>
               </div>
               <div className="why-editorial__list" aria-label="Our approach">
@@ -919,11 +1121,11 @@ export default function App() {
         <section id="reviews" aria-labelledby="reviews-heading" className="border-t border-[#242732]/80 bg-[#0B0D12] py-16 sm:py-20 lg:py-24">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="reviews-editorial">
-              <div className="reviews-editorial__intro section-reveal">
-                <p className="mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Google Reviews</p>
-                <h2 id="reviews-heading" className="font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Hear it from<br /><span className="italic text-[#FFCA6B]">Google.</span></h2>
-                <p className="mt-5 max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-base">A selection of public reviews from the two Google listings. Visit Google for the latest information.</p>
-                <div className="mt-8 flex items-center gap-3 border-t border-[#242732] pt-5 text-xs text-[#B0A090]">
+              <div className="reviews-editorial__intro text-reveal-group">
+                <p className="text-reveal-item text-reveal-item--eyebrow mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Google Reviews</p>
+                <h2 id="reviews-heading" className="text-reveal-item text-reveal-item--heading font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Hear it from<br /><span className="italic text-[#FFCA6B]">Google.</span></h2>
+                <p className="text-reveal-item text-reveal-item--body mt-5 max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-base">A selection of public reviews from the two Google listings. Visit Google for the latest information.</p>
+                <div className="text-reveal-item text-reveal-item--supporting mt-8 flex items-center gap-3 border-t border-[#242732] pt-5 text-xs text-[#B0A090]">
                   <span aria-hidden="true" className="h-px w-8 bg-[#F5A623]" />
                   Checked October 10, 2026 · review details may change.
                 </div>
@@ -981,10 +1183,10 @@ export default function App() {
         <section id="service-areas" aria-labelledby="service-areas-heading" className="service-areas-section border-t border-[#242732]/80 bg-[#080A0E] py-16 sm:py-20 lg:py-24">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="service-areas-editorial">
-              <div className="service-areas-intro section-reveal">
-                <p className="mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Service areas</p>
-                <h2 id="service-areas-heading" className="font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Rooted in the<br /><span className="italic text-[#FFCA6B]">region.</span></h2>
-                <p className="mt-5 max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-base">Bold &amp; Bright Space serves projects across the following cities and states.</p>
+              <div className="service-areas-intro text-reveal-group">
+                <p className="text-reveal-item text-reveal-item--eyebrow mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Service areas</p>
+                <h2 id="service-areas-heading" className="text-reveal-item text-reveal-item--heading font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Rooted in the<br /><span className="italic text-[#FFCA6B]">region.</span></h2>
+                <p className="text-reveal-item text-reveal-item--body mt-5 max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-base">Bold &amp; Bright Space serves projects across the following cities and states.</p>
               </div>
               <div className="service-areas-panel section-reveal">
                 <div className="service-area-group">
@@ -1028,16 +1230,16 @@ export default function App() {
         <section id="contact" aria-labelledby="contact-heading" className="contact-section border-t border-[#242732]/80 bg-[#0B0D12] py-16 sm:py-20 lg:py-24">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="contact-editorial">
-              <div className="contact-intro section-reveal">
-                <p className="mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Contact</p>
-                <h2 id="contact-heading" className="font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Let&apos;s discuss<br /><span className="italic text-[#FFCA6B]">your space.</span></h2>
-                <p className="mt-5 max-w-lg text-sm leading-relaxed text-[#B0A090] sm:text-base">Planning a new interior or looking to upgrade an existing space? Share a few details about your project, and let&apos;s discuss your requirements.</p>
-                <a href="tel:+918722890061" className="contact-call-link mt-7 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]">
+              <div className="contact-intro text-reveal-group">
+                <p className="text-reveal-item text-reveal-item--eyebrow mb-4 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Contact</p>
+                <h2 id="contact-heading" className="text-reveal-item text-reveal-item--heading font-serif text-4xl font-medium leading-tight text-white sm:text-5xl lg:text-6xl">Let&apos;s discuss<br /><span className="italic text-[#FFCA6B]">your space.</span></h2>
+                <p className="text-reveal-item text-reveal-item--body mt-5 max-w-lg text-sm leading-relaxed text-[#B0A090] sm:text-base">Planning a new interior or looking to upgrade an existing space? Share a few details about your project, and let&apos;s discuss your requirements.</p>
+                <a href="tel:+918722890061" className="text-reveal-item text-reveal-item--supporting contact-call-link mt-7 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]">
                   <span className="contact-call-link__label">Call or WhatsApp</span>
                   <span className="contact-call-link__number">+91 87228 90061</span>
                   <ArrowRight aria-hidden="true" className="h-4 w-4 text-[#F5A623]" />
                 </a>
-                <a href="https://wa.me/918722890061" target="_blank" rel="noreferrer" className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-full border border-[#F5A623]/45 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider text-[#FFCA6B] transition-colors hover:bg-[#F5A623]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]">Open WhatsApp <ExternalLink aria-hidden="true" className="h-4 w-4" /></a>
+                <a href="https://wa.me/918722890061" target="_blank" rel="noreferrer" className="text-reveal-item text-reveal-item--action mt-4 inline-flex min-h-11 items-center gap-2 rounded-full border border-[#F5A623]/45 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider text-[#FFCA6B] transition-colors hover:bg-[#F5A623]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]">Open WhatsApp <ExternalLink aria-hidden="true" className="h-4 w-4" /></a>
 
               </div>
 
@@ -1059,8 +1261,8 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="gallery-lightbox-title"
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/90 p-3 backdrop-blur-md sm:p-6"
-          onMouseDown={(event) => { if (event.target === event.currentTarget) setActiveProjectIndex(null) }}
+          className={`lightbox-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/90 p-3 backdrop-blur-md sm:p-6${isProjectLightboxClosing ? ' lightbox-overlay--closing' : ''}`}
+          onMouseDown={(event) => { if (event.target === event.currentTarget) closeProjectLightbox() }}
         >
           <div className="lightbox-panel relative flex max-h-[94vh] w-full max-w-6xl flex-col items-center gap-3 rounded-2xl border border-[#242732] bg-[#101219] p-3 shadow-2xl sm:gap-4 sm:p-5">
             <div className="flex w-full items-center justify-between gap-4">
@@ -1068,7 +1270,7 @@ export default function App() {
                 <h2 id="gallery-lightbox-title" className="font-serif text-lg text-white">Project gallery</h2>
                 <p className="text-xs text-[#B0A090]">{activeProjectIndex + 1} of {activeProjectAssets.length}</p>
               </div>
-              <button ref={lightboxCloseRef} data-lightbox-control type="button" onClick={() => setActiveProjectIndex(null)} aria-label="Close project gallery" className="flex h-11 w-11 items-center justify-center rounded-full border border-[#242732] text-[#B0A090] transition-colors hover:border-[#F5A623]/60 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]"><X aria-hidden="true" /></button>
+              <button ref={lightboxCloseRef} data-lightbox-control type="button" onClick={closeProjectLightbox} aria-label="Close project gallery" className="flex h-11 w-11 items-center justify-center rounded-full border border-[#242732] text-[#B0A090] transition-colors hover:border-[#F5A623]/60 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]"><X aria-hidden="true" /></button>
             </div>
             <div className="lightbox-stage relative flex min-h-0 w-full flex-1 items-center justify-center">
               <button data-lightbox-control type="button" onClick={() => { setPhotoFlipDirection('previous'); setActiveProjectIndex((activeProjectIndex - 1 + activeProjectAssets.length) % activeProjectAssets.length) }} aria-label="Previous project item" className="absolute left-1 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-[#F5A623]/40 bg-black/70 text-[#FFCA6B] transition-colors hover:bg-[#F5A623]/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623] sm:left-3"><ChevronLeft aria-hidden="true" /></button>
