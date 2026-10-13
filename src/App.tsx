@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type FormEvent } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, type FormEvent } from 'react'
 import {
   Menu,
   X,
@@ -21,23 +21,7 @@ import builtinsServicesPhotoUrl from './assets/stock-services-details.jpg'
 import ceilingServicesPhotoUrl from './assets/stock-services-ceilings.jpg'
 import fabricationServicesPhotoUrl from './assets/stock-services-interior.jpg'
 import testimonialPhotoUrl from '../images&videos/854ee4c9-4803-40b6-9690-6f7acf05e852.JPG'
-
-const galleryServiceCategories = [
-  'Interior Design',
-  'False Ceilings',
-  'Gypsum Work',
-  'Furnished Homes',
-  'Factory-Finished Interiors',
-  'Wardrobes',
-  'TV Walls',
-  'Kitchens',
-  'Aluminium Cladding',
-  'Stainless Steel (SS) Works',
-  'Painting',
-  'Glass Partitions',
-  'Aluminium Fabrication',
-] as const
-type GalleryServiceCategory = (typeof galleryServiceCategories)[number]
+import { galleryReferenceImages, galleryServiceCategories, type GalleryServiceCategory } from './data/galleryReferences'
 
 const projectAssetModules = import.meta.glob<string>('../images&videos/*.{JPG,jpg}', {
   eager: true,
@@ -93,7 +77,20 @@ const projectAssets = Object.entries(projectAssetModules)
       : 'Completed interior details in a Bold & Bright Space project',
   }))
 const currentYear = new Date().getFullYear()
-const galleryAssets = projectAssets
+const galleryAssets = [
+  ...projectAssets,
+  ...galleryReferenceImages.map((image) => ({
+    id: image.id,
+    url: image.src,
+    name: image.alt,
+    kind: 'reference' as const,
+    category: image.category,
+    alt: image.alt,
+    sourcePage: image.sourcePage,
+    source: image.source,
+    license: image.license,
+  })),
+]
 
 const googleReviews = [
   {
@@ -217,6 +214,8 @@ function EnquiryForm({ idPrefix }: { idPrefix: string }) {
 type Theme = 'dark' | 'light'
 
 function useTheme(): [Theme, () => void] {
+  const pendingViewRef = useRef<{ section: HTMLElement | null; sectionTop: number; scrollY: number } | null>(null)
+  const transitionTimerRef = useRef<number | null>(null)
   const [theme, setTheme] = useState<Theme>(() => {
     if (typeof window === 'undefined') return 'dark'
     const saved = localStorage.getItem('bbs_theme') as Theme | null
@@ -224,19 +223,55 @@ function useTheme(): [Theme, () => void] {
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
   })
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = document.documentElement
     root.setAttribute('data-theme', theme)
     localStorage.setItem('bbs_theme', theme)
+
+    const pendingView = pendingViewRef.current
+    if (!pendingView) return
+
+    document.querySelectorAll<HTMLElement>('.section-reveal, .service-card-reveal')
+      .forEach((element) => element.classList.add('reveal-entering'))
+    document.querySelectorAll<HTMLElement>('.text-reveal-group')
+      .forEach((element) => element.classList.add('reveal-entering'))
+    document.querySelectorAll<HTMLElement>('.image-reveal')
+      .forEach((element) => element.classList.add('image-reveal-entering'))
+
+    const frame = window.requestAnimationFrame(() => {
+      if (pendingView.section?.isConnected) {
+        const offset = pendingView.section.getBoundingClientRect().top - pendingView.sectionTop
+        window.scrollBy({ top: offset, behavior: 'instant' })
+      } else {
+        window.scrollTo({ top: pendingView.scrollY, behavior: 'instant' })
+      }
+      pendingViewRef.current = null
+    })
+    return () => window.cancelAnimationFrame(frame)
   }, [theme])
 
   const toggle = useCallback(() => {
-    // Apply transition class for smooth colour cross-fade, remove after animation
+    const anchorY = Math.min(window.innerHeight * 0.42, window.innerHeight - 1)
+    const section = Array.from(document.querySelectorAll<HTMLElement>('main section[id]'))
+      .find((candidate) => {
+        const bounds = candidate.getBoundingClientRect()
+        return bounds.top <= anchorY && bounds.bottom > anchorY
+      }) ?? null
+
+    pendingViewRef.current = {
+      section,
+      sectionTop: section?.getBoundingClientRect().top ?? 0,
+      scrollY: window.scrollY,
+    }
+
     const root = document.documentElement
     root.classList.add('theme-transition')
-    const id = window.setTimeout(() => root.classList.remove('theme-transition'), 320)
+    if (transitionTimerRef.current !== null) window.clearTimeout(transitionTimerRef.current)
+    transitionTimerRef.current = window.setTimeout(() => {
+      root.classList.remove('theme-transition')
+      transitionTimerRef.current = null
+    }, 320)
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))
-    return () => window.clearTimeout(id)
   }, [])
 
   return [theme, toggle]
@@ -1058,15 +1093,15 @@ export default function App() {
           </div>
         </section>
 
-        {/* The gallery uses the client's project photographs. */}
+        {/* Client project photos and clearly labeled design references share the service filters. */}
         <section id="portfolio" aria-labelledby="portfolio-heading" className="overflow-hidden border-t border-[#242732]/80 bg-[#080A0E] py-12 sm:py-16 lg:py-20">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="text-reveal-group mb-7 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
               <div className="max-w-2xl">
                 <p className="text-reveal-item text-reveal-item--eyebrow mb-3 text-[10px] font-semibold uppercase tracking-[0.28em] text-[#F5A623]">Gallery</p>
-                <h2 id="portfolio-heading" className="text-reveal-item text-reveal-item--heading font-serif text-3xl font-semibold leading-tight text-white sm:text-4xl lg:text-5xl">A Closer Look at Our Work</h2>
+                <h2 id="portfolio-heading" className="text-reveal-item text-reveal-item--heading font-serif text-3xl font-semibold leading-tight text-white sm:text-4xl lg:text-5xl">Projects and Design References</h2>
               </div>
-              <p className="text-reveal-item text-reveal-item--body max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-right">Explore interior design ideas and finished spaces across our services.</p>
+              <p className="text-reveal-item text-reveal-item--body max-w-md text-sm leading-relaxed text-[#B0A090] sm:text-right">Browse completed client projects alongside clearly marked reference images for each service.</p>
             </div>
             <div className="gallery-filters section-reveal mb-6">
               <div className="hidden flex-wrap items-center gap-2 md:flex" role="group" aria-label="Filter gallery images by service">
@@ -1127,7 +1162,7 @@ export default function App() {
                                 setGalleryOpener(event.currentTarget)
                                 setActiveProjectIndex(assetIndex)
                               }}
-                              aria-label={`View ${asset.category}: ${asset.alt}`}
+                              aria-label={`View ${asset.kind === 'reference' ? 'design reference' : 'project photo'} for ${asset.category}: ${asset.alt}`}
                               className="gallery-card gold-sweep group relative shrink-0 overflow-hidden rounded-xl border border-[#242732] bg-[#12141B] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]"
                             >
                               <img
@@ -1142,6 +1177,11 @@ export default function App() {
                                   if (fallback instanceof HTMLElement) fallback.hidden = false
                                 }}
                               />
+                              {asset.kind === 'reference' && (
+                                <span className="absolute left-3 top-3 rounded-full bg-black/75 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-white">
+                                  Design reference
+                                </span>
+                              )}
                               <span className="gallery-card__fallback" aria-hidden="true" hidden>Image temporarily unavailable</span>
                             </button>
                           )
@@ -1375,6 +1415,11 @@ export default function App() {
               <div>
                 <h2 id="gallery-lightbox-title" className="font-serif text-lg text-white">Gallery image</h2>
                 <p className="text-xs text-[#B0A090]">{activeProjectIndex + 1} of {activeGalleryAssets.length}</p>
+                {activeGalleryAssets[activeProjectIndex].kind === 'reference' && (
+                  <a className="mt-1 inline-block text-xs text-[#FFCA6B] underline underline-offset-2" href={activeGalleryAssets[activeProjectIndex].sourcePage} target="_blank" rel="noreferrer">
+                    Design reference · Unsplash source
+                  </a>
+                )}
               </div>
               <button ref={lightboxCloseRef} data-lightbox-control type="button" onClick={closeProjectLightbox} aria-label="Close project gallery" className="flex h-11 w-11 items-center justify-center rounded-full border border-[#242732] text-[#B0A090] transition-colors hover:border-[#F5A623]/60 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]"><X aria-hidden="true" /></button>
             </div>
