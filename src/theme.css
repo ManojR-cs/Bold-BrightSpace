@@ -77,3 +77,7 @@ html[data-theme="light"] [class*="hover:text-[#FFFFFF"]:hover,
 html[data-theme="light"] [class*="hover:text-white"]:hover {
   color: var(--color-text-primary) !important;
 }
+
+html[data-theme="light"] .bbs-theme-logo {
+  filter: url(#light-theme-logo);
+}
