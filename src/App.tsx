@@ -1177,11 +1177,6 @@ export default function App() {
                                   if (fallback instanceof HTMLElement) fallback.hidden = false
                                 }}
                               />
-                              {asset.kind === 'reference' && (
-                                <span className="absolute left-3 top-3 rounded-full bg-black/75 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-white">
-                                  Design reference
-                                </span>
-                              )}
                               <span className="gallery-card__fallback" aria-hidden="true" hidden>Image temporarily unavailable</span>
                             </button>
                           )
@@ -1415,11 +1410,6 @@ export default function App() {
               <div>
                 <h2 id="gallery-lightbox-title" className="font-serif text-lg text-white">Gallery image</h2>
                 <p className="text-xs text-[#B0A090]">{activeProjectIndex + 1} of {activeGalleryAssets.length}</p>
-                {activeGalleryAssets[activeProjectIndex].kind === 'reference' && (
-                  <a className="mt-1 inline-block text-xs text-[#FFCA6B] underline underline-offset-2" href={activeGalleryAssets[activeProjectIndex].sourcePage} target="_blank" rel="noreferrer">
-                    Design reference · Unsplash source
-                  </a>
-                )}
               </div>
               <button ref={lightboxCloseRef} data-lightbox-control type="button" onClick={closeProjectLightbox} aria-label="Close project gallery" className="flex h-11 w-11 items-center justify-center rounded-full border border-[#242732] text-[#B0A090] transition-colors hover:border-[#F5A623]/60 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#F5A623]"><X aria-hidden="true" /></button>
             </div>
